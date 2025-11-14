@@ -104,30 +104,66 @@ def rb2b_webhook_receiver():
     Receives visitor data from RB2B webhook, processes it,
     and creates a new contact in a specific lemlist campaign.
     """
-    logging.info("Received a new request on /rb2b-webhook.")
+    logging.info("=" * 80)
+    logging.info("🎯 WEBHOOK REQUEST RECEIVED")
+    logging.info("=" * 80)
+    
+    # Log request metadata
+    logging.info(f"📍 Request Method: {request.method}")
+    logging.info(f"📍 Request URL: {request.url}")
+    logging.info(f"📍 Request Path: {request.path}")
+    logging.info(f"📍 Remote Address: {request.remote_addr}")
+    logging.info(f"📍 User Agent: {request.headers.get('User-Agent', 'Unknown')}")
+    logging.info(f"📍 Content Type: {request.headers.get('Content-Type', 'Unknown')}")
+    
+    # Log all headers (for debugging)
+    logging.info("📋 Request Headers:")
+    for header, value in request.headers.items():
+        logging.info(f"   {header}: {value}")
 
     # 1. Receive and Parse Data from RB2B
     try:
+        logging.info("🔄 Step 1: Parsing request body...")
         rb2b_data = request.get_json()
+        
         if not rb2b_data:
-            logging.error("Request body is empty or not JSON.")
+            logging.error("❌ Request body is empty or not JSON.")
             return jsonify({"status": "error", "message": "Invalid request data"}), 400
-        logging.info(f"Received data from RB2B: {rb2b_data}")
+        
+        logging.info("✅ Successfully parsed JSON data")
+        logging.info(f"📦 Raw RB2B Data ({len(rb2b_data)} fields):")
+        for key, value in rb2b_data.items():
+            logging.info(f"   {key}: {value}")
+            
     except Exception as e:
-        logging.error(f"Could not parse JSON data from request: {e}")
+        logging.error(f"❌ Could not parse JSON data from request: {e}")
+        logging.error(f"   Raw request data: {request.data}")
         return jsonify({"status": "error", "message": "Failed to parse JSON"}), 400
 
     # 2. Extract and Validate Essential Data
+    logging.info("🔄 Step 2: Extracting and validating email...")
+    
     # Try multiple field name variations that RB2B might send
-    business_email = (rb2b_data.get("WorkEmail") or 
-                     rb2b_data.get("Business Email") or 
-                     rb2b_data.get("email"))
+    work_email = rb2b_data.get("WorkEmail")
+    business_email_field = rb2b_data.get("Business Email")
+    email_field = rb2b_data.get("email")
+    
+    logging.info(f"   WorkEmail field: {work_email}")
+    logging.info(f"   Business Email field: {business_email_field}")
+    logging.info(f"   email field: {email_field}")
+    
+    business_email = work_email or business_email_field or email_field
     
     if not business_email:
-        logging.warning("RB2B data is missing email field. Cannot create lead in lemlist.")
+        logging.warning("❌ No email found in any field - skipping lead")
+        logging.warning("   Checked fields: WorkEmail, Business Email, email")
         return jsonify({"status": "skipped", "message": "Missing required field: email"}), 200
+    
+    logging.info(f"✅ Email found: {business_email}")
 
     # 3. Data Mapping: Map RB2B fields to lemlist fields
+    logging.info("🔄 Step 3: Mapping RB2B fields to lemlist format...")
+    
     # Standard lemlist fields + custom fields for additional RB2B data
     lemlist_payload = {
         "firstName": rb2b_data.get("FirstName") or rb2b_data.get("First Name"),
@@ -145,18 +181,31 @@ def rb2b_webhook_receiver():
         "estimatedRevenue": rb2b_data.get("EstimateRevenue") or rb2b_data.get("Estimate Revenue")
     }
     
+    logging.info(f"📋 Field mapping (before cleanup):")
+    for key, value in lemlist_payload.items():
+        status = "✅" if value else "⚠️ (empty)"
+        logging.info(f"   {key}: {value} {status}")
+    
     # Remove None values to keep payload clean
     lemlist_payload = {k: v for k, v in lemlist_payload.items() if v is not None}
     
-    logging.info(f"Mapped payload for {business_email}: {list(lemlist_payload.keys())}")
+    logging.info(f"✅ Final payload has {len(lemlist_payload)} fields: {list(lemlist_payload.keys())}")
     
     # 4. Create Contact in lemlist
     try:
+        logging.info("🔄 Step 4: Getting campaign ID...")
         # Ensure campaign exists and get its ID
         campaign_id = get_or_create_campaign()
+        logging.info(f"✅ Campaign ID obtained: {campaign_id}")
         
         # Construct the specific API endpoint URL required by lemlist
         lemlist_api_url = f"https://api.lemlist.com/api/campaigns/{campaign_id}/leads/{business_email}"
+        
+        logging.info("🔄 Step 5: Preparing lemlist API request...")
+        logging.info(f"📍 API URL: {lemlist_api_url}")
+        logging.info(f"📦 Payload being sent to lemlist:")
+        for key, value in lemlist_payload.items():
+            logging.info(f"   {key}: {value}")
 
         # lemlist uses Basic Authentication with EMPTY username and API key as password
         # This creates the format ":APIKEY" as required by lemlist docs
@@ -166,25 +215,48 @@ def rb2b_webhook_receiver():
             "Content-Type": "application/json"
         }
 
-        logging.info(f"Sending data to lemlist campaign '{CAMPAIGN_NAME}' for email: {business_email}")
+        logging.info(f"🚀 Sending POST request to lemlist for: {business_email}")
         response = requests.post(lemlist_api_url, json=lemlist_payload, auth=auth, headers=headers)
+
+        logging.info(f"📥 Response received from lemlist")
+        logging.info(f"   Status Code: {response.status_code}")
+        logging.info(f"   Response Headers: {dict(response.headers)}")
+        logging.info(f"   Response Body: {response.text}")
 
         # 5. Handle lemlist API Response
         # Raise an exception for bad status codes (4xx or 5xx)
         response.raise_for_status() 
 
-        logging.info(f"Successfully created contact in lemlist. Response: {response.json()}")
+        logging.info("=" * 80)
+        logging.info(f"✅ SUCCESS! Contact created in lemlist")
+        logging.info(f"   Email: {business_email}")
+        logging.info(f"   Campaign: {CAMPAIGN_NAME}")
+        logging.info(f"   Response: {response.json()}")
+        logging.info("=" * 80)
         return jsonify({"status": "success", "message": "Contact created in lemlist"}), 201
 
     except requests.exceptions.HTTPError as http_err:
-        logging.error(f"HTTP error occurred while calling lemlist API: {http_err}")
-        logging.error(f"Lemlist API Response Body: {response.text}")
+        logging.error("=" * 80)
+        logging.error(f"❌ HTTP ERROR from lemlist API")
+        logging.error(f"   Error: {http_err}")
+        logging.error(f"   Status Code: {response.status_code}")
+        logging.error(f"   Response Body: {response.text}")
+        logging.error(f"   Email attempted: {business_email}")
+        logging.error(f"   Campaign ID: {campaign_id}")
+        logging.error("=" * 80)
         return jsonify({"status": "error", "message": "Failed to create contact in lemlist", "details": response.text}), 502
     except requests.exceptions.RequestException as req_err:
-        logging.error(f"A network error occurred: {req_err}")
+        logging.error("=" * 80)
+        logging.error(f"❌ NETWORK ERROR connecting to lemlist")
+        logging.error(f"   Error: {req_err}")
+        logging.error("=" * 80)
         return jsonify({"status": "error", "message": "Network error connecting to lemlist"}), 503
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        logging.error("=" * 80)
+        logging.error(f"❌ UNEXPECTED ERROR occurred")
+        logging.error(f"   Error: {e}")
+        logging.error(f"   Error Type: {type(e).__name__}")
+        logging.error("=" * 80)
         return jsonify({"status": "error", "message": "An internal server error occurred"}), 500
 
 
